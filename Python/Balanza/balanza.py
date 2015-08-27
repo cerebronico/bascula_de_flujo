@@ -6,8 +6,7 @@
 '''
 import sys
 import sqlite3 as lite
-import datetime
-import time
+import datetime, time
 import os.path
 import serial
 from PyQt4.QtGui import * # QApplication, QMainWindow, QTextCursor
@@ -23,9 +22,10 @@ class CMainWindow(base, form):
 		self.setupUi(self)
 
 		self.ser = None
+		self.sc = None
 		self.reader = CReader()
 		self.writer = CWriter()
-		self.sender = DataToHost()
+
 		self.print_info("Master, I'm Ready...")
 
 		QObject.connect(self.btnStart, SIGNAL("clicked()"), self.start_cmd)
@@ -34,25 +34,22 @@ class CMainWindow(base, form):
 		QObject.connect(self.reader, SIGNAL("error(QString)"), self.print_error)
 		QObject.connect(self.writer, SIGNAL("error(QString)"), self.print_error)
 
-		self.lblProcessStatus.setText = 'hola'
 
+	def connectToHost(self, **kwargs):	# create an INET, STREAMing socket
+		try:
+			self.sc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			if __debug__:
+				host_IP = '192.168.1.98'
+			else:
+				host_IP = '192.168.1.7'
 
-	'''
-	# create an INET, STREAMing socket
-	try:
-		sc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	except socket.error:
-		print 'Failed to create socket'
+			self.sc.connect((host_IP, 1809))
+			print 'conectado a ' + host_IP
+			assert isinstance(self.sc, object)
 
-	if __debug__:
-		host_IP = '192.168.1.157'
-	else:
-		host_IP = '192.168.13.80'
+		except socket.error:
+			print 'Failed to create socket'
 
-	sc.connect((host_IP, 10001))
-	print 'conectado a ' + host_IP
-	# sc.sendall('este es un mensaje de los marcianos')
-	'''
 
 	def connect(self, **kwargs):
 		self.disconnect()
@@ -63,7 +60,7 @@ class CMainWindow(base, form):
 			# self.ser = serial.Serial('/dev/ttyUSB0', 115200)
 			self.start_reader(self.ser)
 			self.print_info("Connected successfully.")
-			self.writer.start(self.ser, "Hola Mundo\r")
+			self.writer.start(self.ser, "Ready...\r")
 		except:
 			self.ser = None
 			self.print_error("Failed to connect!")
@@ -86,7 +83,6 @@ class CMainWindow(base, form):
 	def stop_threads(self):
 		self.stop_reader()
 		self.stop_writer()
-		self.stop_sender()
 
 	def stop_reader(self):
 		if self.reader.isRunning():
@@ -96,9 +92,6 @@ class CMainWindow(base, form):
 		if self.writer.isRunning():
 			self.writer.terminate()
 
-	def stop_sender(self):
-		if self.sender.isRunning():
-			self.sender.terminate()
 
 	@staticmethod
 	def print_info(text):
@@ -112,13 +105,16 @@ class CMainWindow(base, form):
 
 	def update_screen(self, text):
 		s = text.split(",")
-		global numero_de_acumulaciones_registrado, factorDeCorreccion, peso_acumulado
+
+		global numero_de_acumulaciones_registrado,\
+			factorDeCorreccion, \
+			peso_acumulado, \
+			numero_de_orden
 
 		if len(s) == 8:
 			numero_de_acumulaciones = format(int(s[1]), '8,d')
 			peso_actual = float(s[2])
 			peso_capturado = float(s[3])
-			numero_de_orden = 0
 			hora = time.strftime("%H:%M:%S")
 
 			inputs = s[5].toUShort(16)[0]  # devuelve una tupla (int, bool)
@@ -172,7 +168,12 @@ class CMainWindow(base, form):
 				}
 
 				save_registro(data)
-				# send_registro(data)
+
+				dato = str('11;' + s[1] + ';' + s[2] + ';' + format(peso_acumulado, '8.2f') + ';' + format(numero_de_orden) + ';' + record_date.strftime('%Y-%m-%d;%H:%M:%S') + "\n")
+				# z = (dato)
+				# print dato, len(dato), type(dato), z
+				self.sc.sendall(dato)
+
 				numero_de_acumulaciones_registrado = numero_de_acumulaciones
 
 		else:
@@ -183,7 +184,6 @@ class CMainWindow(base, form):
 		cmd = self.cmdLineEdit.text().toUpper() + "\r"
 		self.writer.start(self.ser, cmd)
 		self.cmdLineEdit.clear()
-
 
 
 	def start_cmd(self):
@@ -200,6 +200,7 @@ class CMainWindow(base, form):
 			                                     "border-color: rgb(255, 255, 255);\n"
 			                                     "color: rgb(255, 255, 255);")
 			self.writer.start(self.ser, "P\r")
+
 
 	def closeEvent(self, event):
 		self.cmdLineEdit.setText('P')
@@ -263,26 +264,6 @@ class CWriter(QThread):
 		self.wait()
 		QThread.terminate(self)
 
-class DataToHost(QThread):
-	def start(self, sc, dato="", priority=QThread.InheritPriority):
-		self.sc = sc
-		self.dato = dato
-		QThread.start(self, priority)
-
-	def run(self):
-		try:
-			self.sc.sendall(str(self.dato))
-		except:
-			errMsg = "sc thread is terminated unexpectedly."
-			self.emit(SIGNAL("error(QString)"), errMsg)
-
-	def terminate(self):
-		self.wait()
-		QThread.terminate(self)
-
-def send_registro(x):
-	dato = x
-	self.sender.start(self.sc, dato)
 
 def save_registro(data):
 	"""
@@ -347,13 +328,15 @@ if __name__ == "__main__":
 
 	if os.path.isfile(sPath):
 		conn = lite.connect(sPath).cursor()
-		conn.execute('SELECT acumulado FROM registro ORDER BY record_date DESC LIMIT 1')
+		conn.execute('SELECT acumulado, orden FROM registro ORDER BY record_date DESC LIMIT 1')
 		all_rows = conn.fetchall()
 
 		peso_acumulado = float(all_rows[0][0])
+		numero_de_orden = int(all_rows [0][1]) + 1
 
 	mainWindow = CMainWindow()  # constructor
 	mainWindow.connect()    # conecta al puerto serial
+	mainWindow.connectToHost()  #conecta al servidor remoto
 	mainWindow.lblAcumulado.setText(format(peso_acumulado, '8,.2f') + ' kg')
 	mainWindow.show()
 	mainWindow.setWindowState(Qt.WindowMaximized)
