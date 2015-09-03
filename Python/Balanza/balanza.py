@@ -1,23 +1,25 @@
 #!/usr/bin/python2.7
 # -*- coding: utf-8 -*-
-''' HMI de controlador de báscula de flujo basado en dsPIC v1.0
+""" HMI de controlador de báscula de flujo basado en dsPIC v1.0
     Cliente: Agripac - Planta San Camilo
     Diseñado y construido por: Joao Desiderio, DesiCO. c.2015
-'''
+"""
 import sys
 import sqlite3 as lite
-import datetime, time
+import datetime
+import time
 import os.path
 import serial
-from PyQt4.QtGui import * # QApplication, QMainWindow, QTextCursor
+import socket  # for sockets
+from PyQt4.QtGui import *  # QApplication, QMainWindow, QTextCursor
 from PyQt4.QtCore import QObject, SIGNAL, QThread, Qt
 from PyQt4 import uic
-import socket  # for sockets
 
 base, form = uic.loadUiType("/home/workspace/Balanza/ui/balanzaHMI.ui")
 
+
 class CMainWindow(base, form):
-    def __init__(self, parent = None):
+    def __init__(self, parent=None):
         super(base, self).__init__(parent)
         self.setupUi(self)
 
@@ -37,30 +39,32 @@ class CMainWindow(base, form):
         QObject.connect(self.reader, SIGNAL("error(QString)"), self.print_error)
         QObject.connect(self.writer, SIGNAL("error(QString)"), self.print_error)
 
-
-    def connectToHost(self, **kwargs):	# create an INET, STREAMing socket
+    def connect2host(self):  # create an INET, STREAMing socket
+        global conectado_al_servidor
         try:
             self.sc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             if __debug__:
-                host_IP = '192.168.1.98'
+                host_ip = '192.168.1.115'
             else:
-                host_IP = '192.168.1.7'
+                host_ip = '192.168.1.7'
 
-            self.sc.connect((host_IP, 1809))
-            print 'conectado a ' + host_IP
+            self.sc.settimeout(1.0)
+            self.sc.connect((host_ip, 1809))
+            conectado_al_servidor = True
+            print 'conectado a ' + host_ip
             assert isinstance(self.sc, object)
 
-        except socket.error:
-            print 'Failed to create socket'
+        except socket.error as msg:
+            self.sc.close()
+            self.sc = None
+            conectado_al_servidor = False
+            print 'Failed to create socket', msg
 
-
-    def connect(self, **kwargs):
+    def connect(self):
         self.disconnect()
 
         try:
-            # self.print_info("Connecting to %s with %s baud rate." % (self.getSelectedPort(), self.getSelectedBaudRate()))
             self.ser = serial.Serial('/dev/ttyO1', 115200)
-            # self.ser = serial.Serial('/dev/ttyUSB0', 115200)
             self.start_reader(self.ser)
             self.print_info("Connected successfully.")
             self.writer.start(self.ser, "Ready...\r")
@@ -68,7 +72,7 @@ class CMainWindow(base, form):
             self.ser = None
             self.print_error("Failed to connect!")
 
-    def disconnect(self, **kwargs):
+    def disconnect(self):
         self.stop_threads()
         if self.ser is None:
             return
@@ -95,25 +99,27 @@ class CMainWindow(base, form):
         if self.writer.isRunning():
             self.writer.terminate()
 
-
     @staticmethod
     def print_info(text):
         print(text)
 
-    def print_error(self, text):
+    @staticmethod
+    def print_error(text):
         print(text)
 
-    def print_cmd(self, text):
+    @staticmethod
+    def print_cmd(text):
         print("> " + text + "\n\n")
 
     def update_screen(self, text):
-        s = text.split(",")
 
-        global numero_de_acumulaciones_registrado,\
-            factorDeCorreccion, \
+        global numero_de_acumulaciones_registrado, \
+            factor_de_correccion, \
             peso_acumulado, \
-            numero_de_orden
+            numero_de_orden, \
+            conectado_al_servidor
 
+        s = text.split(",")
         if len(s) == 8:
             numero_de_acumulaciones = format(int(s[1]), '8,d')
             peso_actual = float(s[2])
@@ -131,16 +137,19 @@ class CMainWindow(base, form):
 
             if fill:
                 self.lblProcessStatus.setText('Filling')
-                self.frmTolvaAlimentadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaAlimentadoraAbierta.gif);")
+                self.frmTolvaAlimentadora.setStyleSheet(
+                    "image: url(/home/workspace/Balanza/ui/tolvaAlimentadoraAbierta.gif);")
                 self.frmTolvaPesadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaPesadoraCerrada.gif);")
 
             elif dump:
                 self.lblProcessStatus.setText('Dumping')
-                self.frmTolvaAlimentadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaAlimentadoraCerrada.gif);")
+                self.frmTolvaAlimentadora.setStyleSheet(
+                    "image: url(/home/workspace/Balanza/ui/tolvaAlimentadoraCerrada.gif);")
                 self.frmTolvaPesadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaPesadoraAbierta.gif);")
             else:
                 self.lblProcessStatus.setText('  ')
-                self.frmTolvaAlimentadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaAlimentadoraCerrada.gif);")
+                self.frmTolvaAlimentadora.setStyleSheet(
+                    "image: url(/home/workspace/Balanza/ui/tolvaAlimentadoraCerrada.gif);")
                 self.frmTolvaPesadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaPesadoraCerrada.gif);")
 
             if motion:
@@ -151,11 +160,11 @@ class CMainWindow(base, form):
                 self.lblScaleStatus.setText('kg')
 
             if (-2 < peso_actual < 2) and zero:
-                factorDeCorreccion = peso_actual
+                factor_de_correccion = peso_actual
                 peso_actual = 0
-                print factorDeCorreccion
+                print factor_de_correccion
             else:
-                peso_actual -= factorDeCorreccion
+                peso_actual -= factor_de_correccion
 
             self.lblPeso.setText(format(peso_actual, '.2f'))
 
@@ -177,10 +186,21 @@ class CMainWindow(base, form):
 
                 save_registro(data)
 
-                dato = str('11;' + s[1] + ';' + s[2] + ';' + format(peso_acumulado, '8.2f') + ';' + format(numero_de_orden) + ';' + record_date.strftime('%Y-%m-%d;%H:%M:%S') + "\n")
-                # z = (dato)
-                # print dato, len(dato), type(dato), z
-                self.sc.sendall(dato)
+                dato = str('11;' + s[1] + ';' + s[2] + ';' +
+                           format(peso_acumulado, '8.2f') + ';' +
+                           format(numero_de_orden) + ';' +
+                           record_date.strftime('%Y-%m-%d;%H:%M:%S') + "\n")
+
+                if not conectado_al_servidor:
+                    self.connect2host()
+
+                if self.sc is not None:
+                    try:
+                        self.sc.sendall(dato)
+
+                    except socket.error as msg:
+                        print msg
+                        conectado_al_servidor = False
 
                 numero_de_acumulaciones_registrado = numero_de_acumulaciones
 
@@ -188,48 +208,33 @@ class CMainWindow(base, form):
             self.logPlainTextEdit.moveCursor(QTextCursor.End)
             self.logPlainTextEdit.insertPlainText(text)
 
-    def process_cmd(self):
-        cmd = self.cmdLineEdit.text().toUpper() + "\r"
-        self.writer.start(self.ser, cmd)
-        self.cmdLineEdit.clear()
-
-
     def start_cmd(self):
 
         mainWindow.btnStart.setStyleSheet("border-image: url(/home/workspace/Balanza/ui/botonGris.gif);\n"
                                           "border-color: rgb(255, 255, 255);\n"
                                           "color: rgb(255, 255, 255);")
         mainWindow.btnStop.setStyleSheet("border-image: url(/home/workspace/Balanza/ui/botonRojo.gif);\n"
-                                          "border-color: rgb(255, 255, 255);\n"
-                                          "color: rgb(255, 255, 255);")
-        #mainWindow.frmTolvaAlimentadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaAlimentadoraAbierta.gif);")
-        #mainWindow.frmTolvaPesadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaPesadoraAbierta.gif);")
-
+                                         "border-color: rgb(255, 255, 255);\n"
+                                         "color: rgb(255, 255, 255);")
         mainWindow.btnStart.setEnabled(False)
         mainWindow.btnStop.setEnabled(True)
         self.writer.start(self.ser, "R\r")
-
 
     def stop_cmd(self):
         mainWindow.btnStart.setStyleSheet("border-image: url(/home/workspace/Balanza/ui/BotonVerde.gif);\n"
                                           "border-color: rgb(255, 255, 255);\n"
                                           "color: rgb(255, 255, 255);")
         mainWindow.btnStop.setStyleSheet("border-image: url(/home/workspace/Balanza/ui/botonGris.gif);\n"
-                                          "border-color: rgb(255, 255, 255);\n"
-                                          "color: rgb(255, 255, 255);")
-
-        #mainWindow.frmTolvaAlimentadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaAlimentadoraCerrada.gif);")
-        #mainWindow.frmTolvaPesadora.setStyleSheet("image: url(/home/workspace/Balanza/ui/tolvaPesadoraCerrada.gif);")
+                                         "border-color: rgb(255, 255, 255);\n"
+                                         "color: rgb(255, 255, 255);")
 
         mainWindow.btnStart.setEnabled(True)
         mainWindow.btnStop.setEnabled(False)
         self.writer.start(self.ser, "P\r")
         print "Parando"
 
-
     def zero_cmd(self):
         self.writer.start(self.ser, "Z\r")
-
 
     def setup_cmd(self):
         if mainWindow.sW.currentWidget() == self.pgDatos:
@@ -241,12 +246,9 @@ class CMainWindow(base, form):
 
         self.writer.start(self.ser, "S\r")
 
-
-    def closeEvent(self, event):
-        # self.pgAjuste.cmdLineEdit.setText('P')
-        self.process_cmd()
+    def close_event(self):
+        self.writer.start(self.ser, 'P\r')
         self.disconnect()
-        # CMainWindow.sc.close()
 
 
 class CReader(QThread):
@@ -258,15 +260,12 @@ class CReader(QThread):
         while True:
             try:
                 data = self.ser.read(1)
-                # n = self.ser.inWaiting()
-                # if n:
-                # 	data += self.ser.read(n)
                 if len(data) == 0:
                     break
 
                 c = data
                 global serial_buffer
-                # check if character is a delimeter
+                # check if character is a delimiter
 
                 if c == '\n':
                     c = ''  # don't want returns. chuck it
@@ -281,9 +280,10 @@ class CReader(QThread):
                 else:
                     serial_buffer += c
 
-            except:
-                errMsg = "Reader thread is terminated unexpectedly."
-                self.emit(SIGNAL("error(QString)"), errMsg)
+            except serial.SerialException as se:
+                print 'problema con la comunicacion serial %s ' % se
+                err_msg = "Reader thread is terminated unexpectedly."
+                self.emit(SIGNAL("error(QString)"), err_msg)
                 break
 
 
@@ -359,7 +359,8 @@ if __name__ == "__main__":
     serial_buffer = ""
     peso_acumulado = 0
     numero_de_acumulaciones_registrado = 0
-    factorDeCorreccion = 0
+    factor_de_correccion = 0
+    conectado_al_servidor = False
 
     if __debug__:
         sPath = '/home/workspace/registro.db'
@@ -372,11 +373,11 @@ if __name__ == "__main__":
         all_rows = conn.fetchall()
 
         peso_acumulado = float(all_rows[0][0])
-        numero_de_orden = int(all_rows [0][1]) + 1
+        numero_de_orden = int(all_rows[0][1]) + 1
 
     mainWindow = CMainWindow()  # constructor
-    mainWindow.connect()    # conecta al puerto serial
-    mainWindow.connectToHost()  #conecta al servidor remoto
+    mainWindow.connect()  # conecta al puerto serial
+    mainWindow.connect2host()  # conecta al servidor remoto
     mainWindow.lblAcumulado.setText(format(peso_acumulado, '8,.2f') + ' kg')
     icon = QIcon()
     icon.addPixmap(QPixmap("/home/workspace/Balanza/ui/DySCR.ico"), QIcon.Normal, QIcon.Off)
